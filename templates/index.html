@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NotebookMH AI 学习系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>NotebookMH</h1>
+            <div class="header-controls">
+                <div class="mode-toggle">
+                    <label class="switch">
+                        <input type="checkbox" id="mode-switch">
+                        <span class="slider">
+                            <span class="mode-label child">儿童</span>
+                            <span class="mode-label adult">成人</span>
+                        </span>
+                    </label>
+                </div>
+                <select id="teacher-select" class="teacher-select" title="选择教师角色">
+                    <option value="auto" selected>自适应</option>
+                    <option value="socratic">启发型</option>
+                    <option value="strict">严师型</option>
+                </select>
+            </div>
+        </header>
+        <div class="teacher-bar">
+            <span id="teacher-badge" class="teacher-badge">自适应·成人</span>
+            <span id="emotion-badge" class="emotion-badge">专注</span>
+        </div>
+
+        <main class="chat-area">
+            <div id="messages" class="messages">
+                <div class="message system">
+                    <div class="bubble">
+                        欢迎来到 NotebookMH！我是你的 AI 学习伙伴。你可以问我任何学科的问题，我会引导你一步步探索答案。准备好了吗？
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="input-area">
+            <div class="input-wrapper">
+                <textarea id="user-input" placeholder="输入你想学的问题..." rows="1"></textarea>
+                <button id="send-btn" type="button">发送</button>
+            </div>
+            <div class="hint-text">按 Enter 发送，Shift+Enter 换行</div>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

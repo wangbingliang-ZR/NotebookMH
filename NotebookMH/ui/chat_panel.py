@@ -76,19 +76,27 @@ def render() -> None:
         placeholder = st.empty()
         cite_box = st.empty()
         sources = st.session_state.get("selected_sources") or None
+        pending_candidates = st.session_state.get("chat_candidates") or None
         text_buf = ""
         citations: list[dict] = []
+        new_candidates: list[dict] | None = None
+        sources_changed = False
         placeholder.markdown("_AI 正在思考..._")
 
         async def _run():
-            nonlocal text_buf, citations
+            nonlocal text_buf, citations, new_candidates, sources_changed
             async for ev in answer(query, vault_uuid, user_id,
-                                   history=history, source_hashes=sources):
+                                   history=history, source_hashes=sources,
+                                   pending_candidates=pending_candidates):
                 if ev["type"] == "citations":
                     citations = ev["data"]
                 elif ev["type"] == "delta":
                     text_buf += ev["text"]
                     placeholder.markdown(text_buf + "▌")
+                elif ev["type"] == "search_results":
+                    new_candidates = ev["data"]
+                elif ev["type"] == "sources_added":
+                    sources_changed = True
                 elif ev["type"] == "done":
                     placeholder.markdown(text_buf)
 
@@ -106,5 +114,12 @@ def render() -> None:
             st.error("对话失败，错误详情如下（请截图反馈）：")
             st.code(traceback.format_exc())
             return
+
+    # Agent：暂存本轮搜到的候选，供下一轮导入
+    if new_candidates is not None:
+        st.session_state["chat_candidates"] = new_candidates
+    # 导入完成后清空候选
+    if sources_changed:
+        st.session_state.pop("chat_candidates", None)
 
     st.rerun()

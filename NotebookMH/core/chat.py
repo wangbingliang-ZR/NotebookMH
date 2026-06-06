@@ -1,9 +1,12 @@
 """core/chat.py — 对话编排"""
+import logging
 from typing import AsyncIterator, Optional
 
 from core.db import db_manager
 from core.llm import llm
 from core.rag import retrieve
+
+log = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT_SOURCES = """你是 NotebookMH，一个基于用户上传资料回答问题的智能助手。
 
@@ -34,10 +37,172 @@ def _build_user_prompt(query: str, chunks: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+async def _classify_intent(query: str, has_candidates: bool) -> dict:
+    """
+    判断用户意图：search（联网找资料）/ import（导入上次候选）/ normal（普通问答）。
+    返回 {"intent", "topic", "selection"}。
+    """
+    options = (
+        '- "search"：用户想联网搜索资料、找来源、找资源（如"帮我搜河北中考生物真题"、'
+        '"找一些光合作用的资料加进来"、"上网查一下…"）\n'
+        '- "normal"：普通问答，基于已有资料回答\n'
+    )
+    if has_candidates:
+        options += (
+            '- "import"：用户想把上一次搜到的候选导入来源'
+            '（如"导入第1、3个"、"全部导入"、"都加进来"、"第2个不要"）\n'
+        )
+    prompt = (
+        f"判断下面这句用户消息的意图。\n用户消息：「{query}」\n\n"
+        f"可选意图：\n{options}\n"
+        "规则：\n"
+        "- 如果是 search，提取用户想搜索的主题 topic（简洁的搜索主题）。\n"
+        + ("- 如果是 import，提取 selection：字符串 \"all\" 表示全部，"
+           "或编号数组如 [1,3,5]（用户提到的序号）。\n" if has_candidates else "")
+        + '返回 JSON：{"intent":"search|import|normal","topic":"","selection":"all"}'
+    )
+    try:
+        data = await llm.chat_json(
+            prompt, system="你是意图识别助手，仅返回 JSON。", temperature=0.1,
+        )
+        intent = data.get("intent", "normal")
+        if intent not in ("search", "import", "normal"):
+            intent = "normal"
+        if intent == "import" and not has_candidates:
+            intent = "normal"
+        return {
+            "intent": intent,
+            "topic": str(data.get("topic", "")).strip(),
+            "selection": data.get("selection", "all"),
+        }
+    except Exception:
+        log.warning("意图识别失败，按普通问答处理", exc_info=True)
+        return {"intent": "normal", "topic": "", "selection": "all"}
+
+
+async def _handle_search(query: str, topic: str) -> AsyncIterator[dict]:
+    """对话内联网搜索，列出候选供用户选择。"""
+    from core.research import search_candidates
+
+    search_topic = topic or query
+    yield {"type": "delta", "text": f"🔍 正在联网搜索「{search_topic}」，请稍候…\n\n"}
+    try:
+        candidates = await search_candidates(search_topic)
+    except Exception:
+        log.warning("对话内搜索失败", exc_info=True)
+        msg = "抱歉，联网搜索出错了，请稍后再试。"
+        yield {"type": "delta", "text": msg}
+        yield {"type": "agent_done", "full_text": f"🔍 搜索「{search_topic}」\n\n{msg}"}
+        return
+
+    if not candidates:
+        msg = "没有找到合适的候选来源，换个更具体的说法再试试？"
+        yield {"type": "delta", "text": msg}
+        yield {"type": "agent_done", "full_text": f"🔍 搜索「{search_topic}」\n\n{msg}"}
+        return
+
+    lines = [f"为你找到 **{len(candidates)}** 个候选来源：\n"]
+    for i, c in enumerate(candidates, 1):
+        lines.append(f"**{i}. {c['title']}**")
+        if c.get("reason"):
+            lines.append(f"   💡 {c['reason']}")
+        lines.append(f"   🔗 {c['url']}")
+        lines.append("")
+    lines.append('回复「**全部导入**」或「**导入第 1、3 个**」，我就帮你加到来源里。')
+    listing = "\n".join(lines)
+
+    yield {"type": "delta", "text": listing}
+    # 把候选交给 UI 暂存，供下一轮导入
+    yield {"type": "search_results", "data": candidates}
+    yield {"type": "agent_done", "full_text": f"🔍 搜索「{search_topic}」\n\n{listing}"}
+
+
+def _parse_selection(selection, n: int) -> list[int]:
+    """把 selection 解析为 0-based 索引列表。"""
+    if isinstance(selection, str) and selection.strip().lower() == "all":
+        return list(range(n))
+    if isinstance(selection, list):
+        out = []
+        for x in selection:
+            try:
+                idx = int(x) - 1  # 用户用 1-based
+            except (ValueError, TypeError):
+                continue
+            if 0 <= idx < n:
+                out.append(idx)
+        return out
+    # 兜底：全部
+    return list(range(n))
+
+
+async def _handle_import(vault_uuid: str, selection,
+                         candidates: list[dict]) -> AsyncIterator[dict]:
+    """把用户选中的候选导入来源。"""
+    from core.research import ingest_selected
+
+    indices = _parse_selection(selection, len(candidates))
+    if not indices:
+        msg = "没识别出你要导入哪几个，请说「全部导入」或「导入第 1、3 个」。"
+        yield {"type": "delta", "text": msg}
+        yield {"type": "agent_done", "full_text": msg}
+        return
+
+    chosen = [candidates[i] for i in indices]
+    yield {"type": "delta", "text": f"📥 正在导入 {len(chosen)} 个来源…\n\n"}
+    try:
+        added = await ingest_selected(vault_uuid, chosen)
+    except Exception:
+        log.warning("对话内导入失败", exc_info=True)
+        msg = "导入过程出错了，请稍后再试。"
+        yield {"type": "delta", "text": msg}
+        yield {"type": "agent_done", "full_text": msg}
+        return
+
+    if added:
+        lines = [f"✅ 已成功导入 **{len(added)}** 个来源：\n"]
+        for a in added:
+            lines.append(f"- 《{a['title']}》（{a.get('chunks', 0)} 片段）")
+        msg = "\n".join(lines)
+        yield {"type": "delta", "text": msg}
+        yield {"type": "sources_added"}
+        yield {"type": "agent_done", "full_text": msg}
+    else:
+        msg = "导入失败，可能这些网页无法抓取，换几个来源试试。"
+        yield {"type": "delta", "text": msg}
+        yield {"type": "agent_done", "full_text": msg}
+
+
 async def answer(query: str, vault_uuid: str, user_id: str,
                  history: Optional[list] = None,
-                 source_hashes: Optional[list[str]] = None
+                 source_hashes: Optional[list[str]] = None,
+                 pending_candidates: Optional[list[dict]] = None
                  ) -> AsyncIterator[dict]:
+    # 0. 意图识别：是否要联网搜索 / 导入候选
+    intent = await _classify_intent(query, bool(pending_candidates))
+
+    if intent["intent"] == "search":
+        full = ""
+        async for ev in _handle_search(query, intent["topic"]):
+            if ev["type"] == "agent_done":
+                full = ev["full_text"]
+            else:
+                yield ev
+        db_manager.save_chat_pair(vault_uuid, user_id, query, full, [])
+        yield {"type": "done", "full_text": full}
+        return
+
+    if intent["intent"] == "import":
+        full = ""
+        async for ev in _handle_import(vault_uuid, intent["selection"],
+                                       pending_candidates or []):
+            if ev["type"] == "agent_done":
+                full = ev["full_text"]
+            else:
+                yield ev
+        db_manager.save_chat_pair(vault_uuid, user_id, query, full, [])
+        yield {"type": "done", "full_text": full}
+        return
+
     # 1. 检索
     chunks = await retrieve(query, vault_uuid, source_hashes=source_hashes)
     citations = [{

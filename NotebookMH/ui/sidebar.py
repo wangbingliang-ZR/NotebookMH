@@ -204,7 +204,9 @@ def render_upload_section() -> None:
                         st.caption(
                             f"🔗 [{c['url'][:50]}...]({c['url']})"
                         )
-                        st.markdown(f"_{c['preview']}..._")
+                        if c.get("reason"):
+                            st.markdown(f"💡 **AI：** {c['reason']}")
+                        st.caption(f"{c['preview']}...")
                     if checked:
                         selected_indices.append(i)
 

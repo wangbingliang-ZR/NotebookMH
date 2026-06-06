@@ -20,52 +20,56 @@ _MIN_SOURCE_TEXT = 300
 _MIN_CHINESE_RATIO = 0.3
 
 
-def _extract_key_terms(topic: str) -> list[str]:
-    """提取有意义的独立关键词（过滤停用词、单字）。"""
-    raw = topic.strip()
-    # 常见停用词
-    stops = {"的", "了", "在", "是", "和", "与", "或", "及", "等", "年",
-             "月", "日", "中", "上", "下", "新", "一个", "最新"}
-    terms: set[str] = set()
-    # 加入完整主题本身
-    terms.add(raw)
-    # 按空格拆分
-    for part in raw.split():
-        if len(part) >= 2 and part not in stops:
-            terms.add(part)
-    # 2-6 字滑动窗口提取中文词组
-    for length in range(2, min(7, len(raw) + 1)):
-        for i in range(len(raw) - length + 1):
-            w = raw[i:i + length]
-            if any('\u4e00' <= c <= '\u9fff' for c in w) and w not in stops:
-                terms.add(w)
-    # 过滤太短的纯英文/数字和过长的无意义串
-    return [t for t in terms if len(t) >= 2 and len(t) <= 20]
-
-
-def _is_relevant(hit: dict, key_terms: list[str], min_match: int = 2) -> bool:
+async def _llm_select_relevant(topic: str, hits: list[dict]) -> list[dict]:
     """
-    搜索结果必须匹配至少 min_match 个关键概念。
-    对"河北省中考生物2026考试大纲"：
-    关键词 = [河北, 中考, 生物, 考试大纲, 2026]
-    一个旅游新闻只匹配"河北" → 不够 → 过滤掉。
+    核心：让 DeepSeek 语义判断哪些搜索结果与用户需求相关。
+    不再用关键词字符串匹配，改由 AI 理解语义。
+
+    输入 hits: [{title, url, snippet}, ...]
+    返回: [{index, reason}, ...] —— index 指向 hits，reason 是“为什么相关”。
     """
-    text = f"{hit.get('title', '')} {hit.get('snippet', '')}".lower()
-    matched = 0
-    for term in key_terms:
-        if term.lower() in text:
-            matched += 1
-            # 完整主题匹配算 2 分
-            if term == key_terms[0] and len(term) > 6:
-                matched += 1
-    return matched >= min_match
+    if not hits:
+        return []
 
+    # 把候选编号列给 LLM
+    lines = []
+    for i, h in enumerate(hits):
+        title = (h.get("title") or "").strip()
+        snippet = (h.get("snippet") or "").strip()[:120]
+        lines.append(f"[{i}] 标题：{title}\n    摘要：{snippet}")
+    listing = "\n".join(lines)
 
-def _page_contains_terms(text: str, key_terms: list[str], min_match: int = 2) -> bool:
-    """网页正文是否包含足够多的关键术语。"""
-    lower = text.lower()
-    matched = sum(1 for t in key_terms if t.lower() in lower)
-    return matched >= min_match
+    prompt = (
+        f"用户想研究的主题是：「{topic}」\n\n"
+        f"以下是搜索引擎返回的候选网页（共 {len(hits)} 条）：\n"
+        f"{listing}\n\n"
+        "请你判断哪些网页与用户主题【真正语义相关】，可作为学习/研究资料。\n"
+        "判断标准：\n"
+        "- 内容主题与用户需求一致（即使用词不同，如“学业水平考试”等同于“中考”）\n"
+        "- 排除无关的新闻、广告、旅游、导航页、纯列表页\n"
+        "- 优先选择权威、信息密度高的资料（如官方文件、教育网站、专业文章）\n"
+        "为每个选中的网页写一句简短说明，告诉用户它为什么相关。\n"
+        '返回 JSON：{"selected":[{"index":0,"reason":"..."},{"index":3,"reason":"..."}]}\n'
+        "如果没有任何相关结果，返回 {\"selected\":[]}。"
+    )
+    try:
+        data = await llm.chat_json(
+            prompt, system="你是资料筛选助手，擅长语义相关性判断，仅返回 JSON。",
+            temperature=0.2,
+        )
+        sel = data.get("selected") or []
+        out = []
+        for item in sel:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(hits):
+                out.append({"index": idx,
+                            "reason": str(item.get("reason", "")).strip()})
+        return out
+    except Exception:
+        log.warning("LLM 相关性筛选失败，回退为全部候选", exc_info=True)
+        return [{"index": i, "reason": ""} for i in range(len(hits))]
 
 
 def _content_quality(text: str) -> bool:
@@ -106,56 +110,66 @@ async def _gen_queries(topic: str, n: int = 3) -> list[str]:
 
 
 async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
-    """搜索并抓取候选网页，返回 [{title, url, snippet, preview, text, ok}]。"""
+    """
+    NotebookLM 风格的来源发现：
+    1. 多查询词搜索，汇总大量候选（仅标题+摘要，不抓全文）
+    2. 把候选丢给 DeepSeek 做语义筛选，挑出相关的并写“为什么相关”
+    3. 只对选中的网页抓取全文，做基础质量检查
+    返回 [{title, url, snippet, reason, preview, text, ok}]。
+    """
     queries = await _gen_queries(topic)
-    key_terms = _extract_key_terms(topic)
-    # 放宽：至少匹配 2 个或 1/3 的关键词（取较小值，保证不严苛）
-    min_match = min(3, max(2, len(key_terms) // 3))
 
+    # ── 步骤 1：广撒网，汇总去重 ──
     seen_urls: set[str] = set()
-    candidates: list[dict] = []
-    _rejected_title = 0
-    _rejected_quality = 0
-
+    all_hits: list[dict] = []
     for q in queries:
-        if len(candidates) >= max_candidates:
-            break
         hits = search(q, max_results=10)
-        log.info("查询 [%s] 原始返回 %d 条", q, len(hits))
-        # 第一层过滤：标题/摘要至少匹配 min_match 个关键词
-        filtered_hits = [h for h in hits if _is_relevant(h, key_terms, min_match=min_match)]
-        _rejected_title += len(hits) - len(filtered_hits)
-        log.info("标题过滤后剩 %d 条", len(filtered_hits))
-
-        for hit in filtered_hits:
-            if len(candidates) >= max_candidates:
-                break
-            u = hit["url"]
-            if u in seen_urls:
+        log.info("查询 [%s] 返回 %d 条", q, len(hits))
+        for h in hits:
+            u = h.get("url", "")
+            if not u or u in seen_urls:
                 continue
             seen_urls.add(u)
-            title = hit.get("title") or u
-            try:
-                parsed = parse_url(u)
-            except Exception:
-                continue
-            text = (parsed.get("text") or "").strip()
-            # 内容质量过滤（只检查长度和语言比例，不检查术语匹配）
-            if not _content_quality(text):
-                _rejected_quality += 1
-                continue
-            preview = text[:200].replace("\n", " ")
-            candidates.append({
-                "title": title,
-                "url": u,
-                "snippet": hit.get("snippet", ""),
-                "preview": preview,
-                "text": text,
-                "ok": True,
-            })
+            all_hits.append(h)
+    log.info("汇总去重后共 %d 条候选", len(all_hits))
 
-    log.info("搜索完成: %d 候选, 标题过滤 %d, 质量过滤 %d",
-              len(candidates), _rejected_title, _rejected_quality)
+    if not all_hits:
+        return []
+
+    # ── 步骤 2：DeepSeek 语义筛选 ──
+    selected = await _llm_select_relevant(topic, all_hits)
+    log.info("AI 语义筛选选中 %d 条", len(selected))
+
+    # ── 步骤 3：仅对选中的抓全文 + 质量检查 ──
+    candidates: list[dict] = []
+    _rejected_quality = 0
+    for sel in selected:
+        if len(candidates) >= max_candidates:
+            break
+        hit = all_hits[sel["index"]]
+        u = hit["url"]
+        title = hit.get("title") or u
+        try:
+            parsed = parse_url(u)
+        except Exception:
+            log.debug("抓取失败: %s", u)
+            continue
+        text = (parsed.get("text") or "").strip()
+        if not _content_quality(text):
+            _rejected_quality += 1
+            continue
+        preview = text[:200].replace("\n", " ")
+        candidates.append({
+            "title": title,
+            "url": u,
+            "snippet": hit.get("snippet", ""),
+            "reason": sel.get("reason", ""),
+            "preview": preview,
+            "text": text,
+            "ok": True,
+        })
+
+    log.info("发现完成: %d 个候选, 质量过滤掉 %d", len(candidates), _rejected_quality)
     return candidates
 
 

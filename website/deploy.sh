@@ -13,14 +13,15 @@ NGINX_SITE="/etc/nginx/sites-available/notebookmh"
 SERVICE_FILE="/etc/systemd/system/notebookmh.service"
 WWW_DIR="/var/www/hiroai"
 
-# 检查 root
-if [ "$EUID" -ne 0 ]; then
+# 检查 sudo 权限
+if ! sudo -n true 2>/dev/null; then
     echo "错误：请用 sudo 运行此脚本"
     exit 1
 fi
 
 echo "[1/7] 克隆/更新代码..."
-mkdir -p "$APP_DIR"
+sudo mkdir -p "$APP_DIR"
+sudo chown $USER:$USER "$APP_DIR"
 cd "$APP_DIR"
 
 if [ ! -d ".git" ]; then
@@ -51,14 +52,14 @@ TELEMETRY_ENABLED=true
 ENVEOF
 
 echo "[4/7] 创建 systemd 服务..."
-cat > "$SERVICE_FILE" << 'SVCEOF'
+sudo tee "$SERVICE_FILE" > /dev/null << 'SVCEOF'
 [Unit]
 Description=NotebookMH (超级笔记本) Streamlit 应用
 After=network.target
 
 [Service]
 Type=simple
-User=root
+User=ubuntu
 WorkingDirectory=/opt/notebookmh/NotebookMH
 Environment="PATH=/opt/notebookmh/venv/bin"
 ExecStart=/opt/notebookmh/venv/bin/streamlit run app.py \
@@ -76,11 +77,11 @@ StandardError=journal
 WantedBy=multi-user.target
 SVCEOF
 
-systemctl daemon-reload
-systemctl enable notebookmh
+sudo systemctl daemon-reload
+sudo systemctl enable notebookmh
 
 echo "[5/7] 配置 Nginx 反向代理..."
-cat > "$NGINX_SITE" << 'NGXEOF'
+sudo tee "$NGINX_SITE" > /dev/null << 'NGXEOF'
 server {
     listen 80;
     server_name notebook.hiroai.cn;
@@ -109,39 +110,40 @@ server {
 }
 NGXEOF
 
-ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
+sudo ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
 
 echo "[6/7] 更新静态网站到 $WWW_DIR..."
+sudo mkdir -p "$WWW_DIR"
 if [ -d "$APP_DIR/website" ]; then
-    cp -r "$APP_DIR/website/"* "$WWW_DIR/"
+    sudo cp -r "$APP_DIR/website/"* "$WWW_DIR/"
 fi
 
 echo "[7/7] 启动 NotebookMH 服务..."
-systemctl restart notebookmh
+sudo systemctl restart notebookmh
 sleep 3
 
-if systemctl is-active --quiet notebookmh; then
+if sudo systemctl is-active --quiet notebookmh; then
     echo ""
     echo "========================================"
     echo "  ✅ 部署成功！"
     echo "========================================"
     echo ""
-    echo "  Streamlit 状态: $(systemctl is-active notebookmh)"
+    echo "  Streamlit 状态: $(sudo systemctl is-active notebookmh)"
     echo "  本地访问: http://127.0.0.1:8501"
     echo "  域名访问: http://notebook.hiroai.cn"
     echo ""
     echo "  ⚠️  重要：请在腾讯云 DNS 添加记录："
     echo "     notebook.hiroai.cn A -> $(curl -s ip.sb || hostname -I | awk '{print $1}')"
     echo ""
-    echo "  查看日志: journalctl -u notebookmh -f"
-    echo "  重启服务: systemctl restart notebookmh"
+    echo "  查看日志: sudo journalctl -u notebookmh -f"
+    echo "  重启服务: sudo systemctl restart notebookmh"
     echo ""
 else
     echo ""
     echo "========================================"
     echo "  ❌ 服务启动失败，查看日志："
     echo "========================================"
-    journalctl -u notebookmh --no-pager -n 50
+    sudo journalctl -u notebookmh --no-pager -n 50
     exit 1
 fi

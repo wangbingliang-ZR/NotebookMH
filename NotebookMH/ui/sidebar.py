@@ -159,6 +159,32 @@ def render_upload_section() -> None:
             else:
                 st.warning("请输入 URL")
 
+    with st.expander("🔍 AI 联网找资料"):
+        st.caption("输入主题，AI 自动联网搜索并把网页加为来源")
+        topic = st.text_input("研究主题 / 需求", key="ui_research_topic",
+                              placeholder="如：量子计算最新进展")
+        if st.button("AI 搜索并添加", key="ui_btn_research",
+                     use_container_width=True):
+            if topic.strip():
+                from core.research import research_and_ingest
+                box = st.empty()
+                try:
+                    added = asyncio.run(research_and_ingest(
+                        vault_uuid, topic.strip(),
+                        progress=lambda m: box.info(m),
+                    ))
+                    if added:
+                        box.empty()
+                        st.success(f"已添加 {len(added)} 个来源")
+                        st.rerun()
+                    else:
+                        box.empty()
+                        st.warning("未找到可用来源，换个说法再试")
+                except Exception:
+                    st.error("联网检索失败，请稍后重试")
+            else:
+                st.warning("请输入研究主题")
+
     if docs:
         st.caption(f"已收录 {len(docs)} 个来源")
         selected: list[str] = []

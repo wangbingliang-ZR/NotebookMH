@@ -53,6 +53,14 @@ def _render_tools_grid(vault_uuid: str, user_id: str) -> None:
                 try:
                     result = _run_tool(key, vault_uuid)
                     st.session_state[f"_studio_result_{key}"] = result
+                    # 新生成的逐题内容，重置交互进度
+                    if key == "flashcards":
+                        for k in ("_fc_idx", "_fc_show", "_fc_known"):
+                            st.session_state.pop(k, None)
+                    elif key == "quiz":
+                        for k in ("_qz_idx", "_qz_answered", "_qz_score",
+                                  "_qz_last_correct"):
+                            st.session_state.pop(k, None)
                 except Exception:
                     st.session_state[f"_studio_result_{key}"] = traceback.format_exc()
             st.rerun()
@@ -98,33 +106,13 @@ def _render_result(key: str, label: str, res, vault_uuid: str, user_id: str):
         if not isinstance(res, list) or not res:
             st.warning("未生成闪卡")
             return
-        for i, card in enumerate(res):
-            with st.container(border=True):
-                st.markdown(f"**Q{i+1}:** {card['question']}")
-                with st.expander("答案"):
-                    st.markdown(card["answer"])
-        cols = st.columns(2)
-        if cols[0].button("保存到闪卡库", key=f"save_{key}"):
-            db_manager.save_flashcards(vault_uuid, res)
-            st.success(f"已保存 {len(res)} 张闪卡")
-        if cols[1].button("清除", key=f"clear_{key}"):
-            del st.session_state[f"_studio_result_{key}"]
-            st.rerun()
+        _render_flashcard_session(res, vault_uuid)
 
     elif key == "quiz":
         if not isinstance(res, list) or not res:
             st.warning("未生成测验题")
             return
-        st.markdown(f"生成了 {len(res)} 道题")
-        cols = st.columns(2)
-        if cols[0].button("加入测验库", key=f"save_{key}"):
-            db_manager.save_quiz_items(vault_uuid, res)
-            del st.session_state[f"_studio_result_{key}"]
-            st.success("已加入测验库")
-            st.rerun()
-        if cols[1].button("清除", key=f"clear_{key}"):
-            del st.session_state[f"_studio_result_{key}"]
-            st.rerun()
+        _render_quiz_session(res, vault_uuid)
 
     elif key == "presentation":
         slides = res.get("slides") if isinstance(res, dict) else []
@@ -168,6 +156,120 @@ def _render_result(key: str, label: str, res, vault_uuid: str, user_id: str):
         if cols[1].button("清除", key=f"clear_{key}"):
             del st.session_state[f"_studio_result_{key}"]
             st.rerun()
+
+
+def _render_flashcard_session(cards: list, vault_uuid: str) -> None:
+    """闪卡逐张交互：显示问题 → 看答案 → 记住了/没记住 → 下一张。"""
+    st.session_state.setdefault("_fc_idx", 0)
+    st.session_state.setdefault("_fc_show", False)
+    st.session_state.setdefault("_fc_known", 0)
+    n = len(cards)
+    idx = st.session_state["_fc_idx"]
+
+    if idx >= n:
+        known = st.session_state["_fc_known"]
+        st.success(f"本轮完成！共 {n} 张，记住 {known} 张")
+        c0, c1, c2 = st.columns(3)
+        if c0.button("🔄 再来一轮", key="fc_restart", use_container_width=True):
+            st.session_state["_fc_idx"] = 0
+            st.session_state["_fc_show"] = False
+            st.session_state["_fc_known"] = 0
+            st.rerun()
+        if c1.button("💾 保存到闪卡库", key="fc_save_lib",
+                     use_container_width=True):
+            db_manager.save_flashcards(vault_uuid, cards)
+            st.success(f"已保存 {n} 张")
+        if c2.button("清除", key="fc_clear", use_container_width=True):
+            for k in ("_fc_idx", "_fc_show", "_fc_known"):
+                st.session_state.pop(k, None)
+            st.session_state.pop("_studio_result_flashcards", None)
+            st.rerun()
+        return
+
+    card = cards[idx]
+    st.progress((idx) / n, text=f"第 {idx + 1} / {n} 张")
+    with st.container(border=True):
+        st.markdown(f"#### {card['question']}")
+        if not st.session_state["_fc_show"]:
+            if st.button("👀 显示答案", key=f"fc_show_{idx}",
+                         use_container_width=True):
+                st.session_state["_fc_show"] = True
+                st.rerun()
+        else:
+            st.info(card["answer"])
+            c0, c1 = st.columns(2)
+            if c0.button("✅ 记住了", key=f"fc_known_{idx}",
+                         use_container_width=True):
+                st.session_state["_fc_known"] += 1
+                st.session_state["_fc_idx"] += 1
+                st.session_state["_fc_show"] = False
+                st.rerun()
+            if c1.button("❌ 没记住", key=f"fc_again_{idx}",
+                         use_container_width=True):
+                st.session_state["_fc_idx"] += 1
+                st.session_state["_fc_show"] = False
+                st.rerun()
+
+
+def _render_quiz_session(items: list, vault_uuid: str) -> None:
+    """测验逐题交互：答一题 → 即时反馈+解析 → 下一题 → 最终得分。"""
+    st.session_state.setdefault("_qz_idx", 0)
+    st.session_state.setdefault("_qz_answered", False)
+    st.session_state.setdefault("_qz_score", 0)
+    n = len(items)
+    idx = st.session_state["_qz_idx"]
+
+    if idx >= n:
+        score = st.session_state["_qz_score"]
+        st.success(f"测验完成！得分 {score} / {n}")
+        c0, c1 = st.columns(2)
+        if c0.button("🔄 再来一轮", key="qz_restart", use_container_width=True):
+            st.session_state["_qz_idx"] = 0
+            st.session_state["_qz_answered"] = False
+            st.session_state["_qz_score"] = 0
+            st.rerun()
+        if c1.button("清除", key="qz_clear", use_container_width=True):
+            for k in ("_qz_idx", "_qz_answered", "_qz_score",
+                      "_qz_last_correct"):
+                st.session_state.pop(k, None)
+            st.session_state.pop("_studio_result_quiz", None)
+            st.rerun()
+        return
+
+    it = items[idx]
+    st.progress(idx / n, text=f"第 {idx + 1} / {n} 题")
+    with st.container(border=True):
+        st.markdown(f"#### {it['question']}")
+        answered = st.session_state["_qz_answered"]
+        sel = st.radio("选择答案", it["options"], key=f"qz_opt_{idx}",
+                       index=None, disabled=answered)
+
+        if not answered:
+            if st.button("提交", key=f"qz_submit_{idx}",
+                         use_container_width=True):
+                if not sel:
+                    st.warning("请先选择一个答案")
+                else:
+                    sel_letter = sel.strip()[0].upper()
+                    correct = it["correct"].strip().upper()
+                    ok = sel_letter == correct
+                    st.session_state["_qz_answered"] = True
+                    st.session_state["_qz_last_correct"] = ok
+                    if ok:
+                        st.session_state["_qz_score"] += 1
+                    st.rerun()
+        else:
+            if st.session_state.get("_qz_last_correct"):
+                st.success("✅ 答对了！")
+            else:
+                st.error(f"❌ 答错了，正确答案：{it['correct']}")
+            if it.get("explanation"):
+                st.caption(f"解析：{it['explanation']}")
+            if st.button("下一题 ▶", key=f"qz_next_{idx}",
+                         use_container_width=True):
+                st.session_state["_qz_idx"] += 1
+                st.session_state["_qz_answered"] = False
+                st.rerun()
 
 
 def _render_quiz_library(vault_uuid: str) -> None:

@@ -16,8 +16,8 @@ from core.websearch import search
 
 log = logging.getLogger(__name__)
 
-_MIN_SOURCE_TEXT = 300
-_MIN_CHINESE_RATIO = 0.3
+_MIN_SOURCE_TEXT = 150
+_MIN_CHINESE_RATIO = 0.2
 
 
 async def _llm_select_relevant(topic: str, hits: list[dict]) -> list[dict]:
@@ -83,9 +83,150 @@ def _content_quality(text: str) -> bool:
     if chinese_chars / total_chars < _MIN_CHINESE_RATIO:
         return False
     sentences = re.split(r'[。！？.!?]', text)
-    if len([s for s in sentences if len(s.strip()) > 10]) < 5:
+    if len([s for s in sentences if len(s.strip()) > 8]) < 2:
         return False
     return True
+
+
+async def _plan_research(topic: str) -> list[dict]:
+    """
+    把用户需求拆解成一套完整的【知识资料结构】，每个模块带搜索查询词。
+    这是 Agent 自动补全的核心：像教研专家一样规划要收集哪些类别的资料。
+    返回 [{"category","purpose","queries":[...]}, ...]
+    """
+    prompt = (
+        f"用户的学习/研究需求是：「{topic}」\n\n"
+        "请你作为资深教研/研究专家，把这个需求拆解成一套【完整的知识资料结构】，"
+        "列出为满足该需求需要系统收集哪些类别的资料，形成一条完整的知识链。\n\n"
+        "例如对于「某地某学科的考试备考」，通常需要：\n"
+        "- 考试大纲/考试说明（明确考查范围、题型、分值）\n"
+        "- 历年真题（最近 2-4 年，每年单独一个查询，含答案解析）\n"
+        "- 最新考点/命题趋势分析\n"
+        "- 配套教材/知识点梳理\n"
+        "- 高质量模拟题/押题卷\n"
+        "- 官方政策/考试通知\n\n"
+        "请根据用户的【具体需求】灵活设计类别（不要照搬上面的例子），"
+        "覆盖面要全，要有“最新”和“历年”的时间维度。\n"
+        "为每个类别生成 1-3 个【精准、具体】的搜索查询词（含地点/学科/年份等限定词）。\n"
+        '返回 JSON：{"modules":[{"category":"考试大纲","purpose":"明确考查范围",'
+        '"queries":["2024河北中考生物考试大纲","河北中考生物考试说明"]},'
+        '{"category":"2024年真题","purpose":"...","queries":["..."]}]}'
+    )
+    try:
+        data = await llm.chat_json(
+            prompt, system="你是教研规划专家，擅长把需求拆解成完整知识结构，仅返回 JSON。",
+            temperature=0.4,
+        )
+        modules = []
+        for m in (data.get("modules") or []):
+            if not isinstance(m, dict):
+                continue
+            cat = str(m.get("category", "")).strip()
+            queries = [str(q).strip() for q in (m.get("queries") or [])
+                       if str(q).strip()]
+            if cat and queries:
+                modules.append({
+                    "category": cat,
+                    "purpose": str(m.get("purpose", "")).strip(),
+                    "queries": queries[:3],
+                })
+        return modules or [{"category": "综合资料", "purpose": "",
+                            "queries": [topic]}]
+    except Exception:
+        log.warning("知识结构规划失败，回退到简单查询", exc_info=True)
+        return [{"category": "综合资料", "purpose": "", "queries": [topic]}]
+
+
+async def _fetch_candidate(hit: dict, reason: str, category: str) -> Optional[dict]:
+    """抓取单个网页全文并做质量检查，返回候选或 None。"""
+    import asyncio
+    u = hit["url"]
+    title = hit.get("title") or u
+    try:
+        parsed = await asyncio.wait_for(
+            asyncio.to_thread(parse_url, u), timeout=12,
+        )
+    except Exception:
+        return None
+    text = (parsed.get("text") or "").strip()
+    if not _content_quality(text):
+        return None
+    return {
+        "title": title,
+        "url": u,
+        "snippet": hit.get("snippet", ""),
+        "reason": reason,
+        "category": category,
+        "preview": text[:200].replace("\n", " "),
+        "text": text,
+        "ok": True,
+    }
+
+
+async def plan_and_discover(topic: str, max_total: int = 30) -> list[dict]:
+    """
+    NotebookLM 风格的深度来源发现（Agent 自动规划知识结构）：
+    1. LLM 规划知识结构（考纲/真题/考点/教材/模拟题/政策…）
+    2. 每个模块的查询词分别联网搜索，全局去重、过滤微信
+    3. 每个模块用 LLM 语义筛选相关结果
+    4. 并行抓取选中网页全文
+    返回扁平候选列表，每条带 category 标签。
+    """
+    import asyncio
+
+    modules = await _plan_research(topic)
+    log.info("规划出 %d 个知识模块: %s", len(modules),
+             [m["category"] for m in modules])
+
+    # ── 步骤 1+2：分模块搜索，全局去重 ──
+    seen_urls: set[str] = set()
+    for m in modules:
+        m_hits: list[dict] = []
+        for q in m["queries"]:
+            try:
+                hits = search(q, max_results=8)
+            except Exception:
+                continue
+            for h in hits:
+                u = h.get("url", "")
+                if not u or u in seen_urls:
+                    continue
+                if "mp.weixin.qq.com" in u:
+                    continue
+                seen_urls.add(u)
+                m_hits.append(h)
+        m["hits"] = m_hits
+        log.info("模块[%s] 搜到 %d 条", m["category"], len(m_hits))
+
+    # ── 步骤 3：每模块 LLM 语义筛选 ──
+    select_tasks = [
+        _llm_select_relevant(f"{topic} - {m['category']}（{m['purpose']}）", m["hits"])
+        for m in modules
+    ]
+    selections = await asyncio.gather(*select_tasks, return_exceptions=True)
+
+    # ── 步骤 4：并行抓取选中网页 ──
+    fetch_tasks = []
+    for m, sel in zip(modules, selections):
+        if isinstance(sel, Exception) or not sel:
+            continue
+        for s in sel:
+            hit = m["hits"][s["index"]]
+            fetch_tasks.append(
+                _fetch_candidate(hit, s.get("reason", ""), m["category"])
+            )
+
+    results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+    candidates: list[dict] = []
+    for r in results:
+        if isinstance(r, dict) and r:
+            candidates.append(r)
+            if len(candidates) >= max_total:
+                break
+
+    log.info("深度发现完成: %d 个候选，覆盖 %d 个模块",
+             len(candidates), len({c["category"] for c in candidates}))
+    return candidates
 
 
 async def _gen_queries(topic: str, n: int = 3) -> list[str]:
@@ -119,7 +260,7 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
     """
     queries = await _gen_queries(topic)
 
-    # ── 步骤 1：广撒网，汇总去重 ──
+    # ── 步骤 1：广撒网，汇总去重，过滤微信 ──
     seen_urls: set[str] = set()
     all_hits: list[dict] = []
     for q in queries:
@@ -128,6 +269,9 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
         for h in hits:
             u = h.get("url", "")
             if not u or u in seen_urls:
+                continue
+            # 跳过微信文章链接（反爬严重，服务器上几乎无法抓取）
+            if "mp.weixin.qq.com" in u:
                 continue
             seen_urls.add(u)
             all_hits.append(h)
@@ -143,6 +287,7 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
     # ── 步骤 3：仅对选中的抓全文 + 质量检查 ──
     candidates: list[dict] = []
     _rejected_quality = 0
+    import asyncio
     for sel in selected:
         if len(candidates) >= max_candidates:
             break
@@ -150,7 +295,14 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
         u = hit["url"]
         title = hit.get("title") or u
         try:
-            parsed = parse_url(u)
+            # 用 to_thread 避免阻塞，wait_for 防止超时
+            parsed = await asyncio.wait_for(
+                asyncio.to_thread(parse_url, u),
+                timeout=12,
+            )
+        except asyncio.TimeoutError:
+            log.debug("抓取超时: %s", u)
+            continue
         except Exception:
             log.debug("抓取失败: %s", u)
             continue

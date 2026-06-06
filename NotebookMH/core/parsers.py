@@ -133,7 +133,7 @@ def _fetch_static(url: str):
     """httpx 抓静态 HTML。返回 (html, error)。"""
     import httpx
     try:
-        with httpx.Client(timeout=30, follow_redirects=True,
+        with httpx.Client(timeout=10, follow_redirects=True,
                           headers=_URL_HEADERS) as client:
             r = client.get(url)
             r.raise_for_status()
@@ -156,7 +156,7 @@ def _fetch_headless(url: str) -> str:
         )
         try:
             page = browser.new_page(user_agent=_URL_HEADERS["User-Agent"])
-            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.goto(url, wait_until="networkidle", timeout=10000)
             html = page.content()
         finally:
             browser.close()

@@ -81,38 +81,55 @@ async def _classify_intent(query: str, has_candidates: bool) -> dict:
 
 
 async def _handle_search(query: str, topic: str) -> AsyncIterator[dict]:
-    """对话内联网搜索，列出候选供用户选择。"""
-    from core.research import search_candidates
+    """
+    对话内深度来源发现（Agent 自动规划知识结构）：
+    规划知识链 → 分维度搜索 → 语义筛选 → 抓取 → 按结构列出供用户选择。
+    """
+    from core.research import plan_and_discover
 
     search_topic = topic or query
-    yield {"type": "delta", "text": f"🔍 正在联网搜索「{search_topic}」，请稍候…\n\n"}
+    yield {"type": "delta",
+           "text": (f"🧠 正在为「{search_topic}」规划知识结构并联网搜集资料，"
+                    "这一步会分多个维度（考纲/真题/考点/教材等）深度搜索，"
+                    "需要 30 秒左右，请稍候…\n\n")}
     try:
-        candidates = await search_candidates(search_topic)
+        candidates = await plan_and_discover(search_topic)
     except Exception:
-        log.warning("对话内搜索失败", exc_info=True)
-        msg = "抱歉，联网搜索出错了，请稍后再试。"
+        log.warning("对话内深度搜索失败", exc_info=True)
+        msg = "抱歉，搜集资料时出错了，请稍后再试。"
         yield {"type": "delta", "text": msg}
         yield {"type": "agent_done", "full_text": f"🔍 搜索「{search_topic}」\n\n{msg}"}
         return
 
     if not candidates:
-        msg = "没有找到合适的候选来源，换个更具体的说法再试试？"
+        msg = ("没有搜集到合适的网络来源。中文教育类资料很多锁在公众号/题库里，"
+               "通用搜索难以抓取。你可以把已有的资料链接用左侧「批量导入网页链接」加进来。")
         yield {"type": "delta", "text": msg}
         yield {"type": "agent_done", "full_text": f"🔍 搜索「{search_topic}」\n\n{msg}"}
         return
 
-    lines = [f"为你找到 **{len(candidates)}** 个候选来源：\n"]
+    # 按知识结构分组展示，全局编号供导入
+    from collections import OrderedDict
+    groups: "OrderedDict[str, list]" = OrderedDict()
     for i, c in enumerate(candidates, 1):
-        lines.append(f"**{i}. {c['title']}**")
-        if c.get("reason"):
-            lines.append(f"   💡 {c['reason']}")
-        lines.append(f"   🔗 {c['url']}")
+        c["_num"] = i
+        groups.setdefault(c.get("category", "其他"), []).append(c)
+
+    n_cat = len(groups)
+    lines = [f"📚 我为「{search_topic}」规划了 **{n_cat}** 个资料维度，"
+             f"共搜集到 **{len(candidates)}** 个可用来源：\n"]
+    for cat, items in groups.items():
+        lines.append(f"### {cat}")
+        for c in items:
+            lines.append(f"**{c['_num']}. {c['title']}**")
+            if c.get("reason"):
+                lines.append(f"   💡 {c['reason']}")
+            lines.append(f"   🔗 {c['url']}")
         lines.append("")
-    lines.append('回复「**全部导入**」或「**导入第 1、3 个**」，我就帮你加到来源里。')
+    lines.append('回复「**全部导入**」一次性收录，或「**导入第 1、3、5 个**」选择性收录。')
     listing = "\n".join(lines)
 
     yield {"type": "delta", "text": listing}
-    # 把候选交给 UI 暂存，供下一轮导入
     yield {"type": "search_results", "data": candidates}
     yield {"type": "agent_done", "full_text": f"🔍 搜索「{search_topic}」\n\n{listing}"}
 

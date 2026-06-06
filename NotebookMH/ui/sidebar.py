@@ -149,7 +149,11 @@ def render_upload_section() -> None:
             if url.strip():
                 try:
                     result = asyncio.run(ingest_url(vault_uuid, url.strip()))
-                    st.success(result["msg"]) if result["status"] == "ok" else st.error(result["msg"])
+                    if result["status"] == "ok":
+                        st.success(result["msg"])
+                        st.rerun()
+                    else:
+                        st.error(result["msg"])
                 except Exception:
                     st.error(f"URL 抓取失败，请检查链接有效性")
             else:

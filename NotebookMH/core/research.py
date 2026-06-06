@@ -109,20 +109,25 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
     """搜索并抓取候选网页，返回 [{title, url, snippet, preview, text, ok}]。"""
     queries = await _gen_queries(topic)
     key_terms = _extract_key_terms(topic)
-    # 至少需要匹配 ceil(术语数 * 0.6) 个
-    min_match = max(2, (len(key_terms) + 1) // 2)
+    # 放宽：至少匹配 2 个或 1/3 的关键词（取较小值，保证不严苛）
+    min_match = min(3, max(2, len(key_terms) // 3))
 
     seen_urls: set[str] = set()
     candidates: list[dict] = []
-    _rejected = 0
+    _rejected_title = 0
+    _rejected_quality = 0
 
     for q in queries:
         if len(candidates) >= max_candidates:
             break
         hits = search(q, max_results=10)
-        # 第一层过滤：标题/摘要必须匹配多个关键词
-        hits = [h for h in hits if _is_relevant(h, key_terms, min_match=min_match)]
-        for hit in hits:
+        log.info("查询 [%s] 原始返回 %d 条", q, len(hits))
+        # 第一层过滤：标题/摘要至少匹配 min_match 个关键词
+        filtered_hits = [h for h in hits if _is_relevant(h, key_terms, min_match=min_match)]
+        _rejected_title += len(hits) - len(filtered_hits)
+        log.info("标题过滤后剩 %d 条", len(filtered_hits))
+
+        for hit in filtered_hits:
             if len(candidates) >= max_candidates:
                 break
             u = hit["url"]
@@ -135,12 +140,9 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
             except Exception:
                 continue
             text = (parsed.get("text") or "").strip()
+            # 内容质量过滤（只检查长度和语言比例，不检查术语匹配）
             if not _content_quality(text):
-                _rejected += 1
-                continue
-            # 第二层过滤：正文也必须包含足够多的关键术语
-            if not _page_contains_terms(text, key_terms, min_match=min_match):
-                _rejected += 1
+                _rejected_quality += 1
                 continue
             preview = text[:200].replace("\n", " ")
             candidates.append({
@@ -152,7 +154,8 @@ async def search_candidates(topic: str, max_candidates: int = 8) -> list[dict]:
                 "ok": True,
             })
 
-    log.info("搜索完成: %d 候选, %d 被过滤", len(candidates), _rejected)
+    log.info("搜索完成: %d 候选, 标题过滤 %d, 质量过滤 %d",
+              len(candidates), _rejected_title, _rejected_quality)
     return candidates
 
 

@@ -1,5 +1,6 @@
 """core/chat.py — 对话编排"""
 import logging
+import re
 from typing import AsyncIterator, Optional
 
 from core.db import db_manager
@@ -7,6 +8,52 @@ from core.llm import llm
 from core.rag import retrieve
 
 log = logging.getLogger(__name__)
+
+_URL_RE = re.compile(r'https?://[^\s，。、）)】」"\'<>]+')
+
+
+def _extract_urls(text: str) -> list[str]:
+    """从文本里提取所有 http/https 链接，去重保序。"""
+    seen = set()
+    out = []
+    for u in _URL_RE.findall(text or ""):
+        u = u.rstrip('.,;')
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+async def _handle_url_ingest(vault_uuid: str, urls: list[str]) -> AsyncIterator[dict]:
+    """直接抓取并导入用户在对话里贴出的网址。"""
+    from core.ingest import ingest_url
+
+    yield {"type": "delta",
+           "text": f"🔗 检测到 {len(urls)} 个链接，正在逐个抓取并导入…\n\n"}
+    ok_lines = []
+    fail_lines = []
+    for i, u in enumerate(urls, 1):
+        try:
+            res = await ingest_url(vault_uuid, u)
+        except Exception:
+            log.warning("对话内 URL 导入失败: %s", u, exc_info=True)
+            res = {"status": "error", "msg": "抓取异常"}
+        if res.get("status") == "ok":
+            ok_lines.append(f"- ✅ {u}（{res.get('chunks', 0)} 片段）")
+        else:
+            fail_lines.append(f"- ❌ {u}：{res.get('msg', '抓取失败')}")
+
+    parts = []
+    if ok_lines:
+        parts.append(f"成功导入 **{len(ok_lines)}** 个来源：\n" + "\n".join(ok_lines))
+    if fail_lines:
+        parts.append(f"\n失败 **{len(fail_lines)}** 个：\n" + "\n".join(fail_lines)
+                     + "\n\n（失败多为 JS 动态渲染页，需服务器安装 Playwright 才能抓取）")
+    msg = "\n".join(parts) or "没有成功导入任何链接。"
+    yield {"type": "delta", "text": msg}
+    if ok_lines:
+        yield {"type": "sources_added"}
+    yield {"type": "agent_done", "full_text": msg}
 
 _SYSTEM_PROMPT_SOURCES = """你是 NotebookMH，一个基于用户上传资料回答问题的智能助手。
 
@@ -194,7 +241,20 @@ async def answer(query: str, vault_uuid: str, user_id: str,
                  source_hashes: Optional[list[str]] = None,
                  pending_candidates: Optional[list[dict]] = None
                  ) -> AsyncIterator[dict]:
-    # 0. 意图识别：是否要联网搜索 / 导入候选
+    # 0a. 如果用户直接贴了网址，优先抓取导入
+    urls = _extract_urls(query)
+    if urls:
+        full = ""
+        async for ev in _handle_url_ingest(vault_uuid, urls):
+            if ev["type"] == "agent_done":
+                full = ev["full_text"]
+            else:
+                yield ev
+        db_manager.save_chat_pair(vault_uuid, user_id, query, full, [])
+        yield {"type": "done", "full_text": full}
+        return
+
+    # 0b. 意图识别：是否要联网搜索 / 导入候选
     intent = await _classify_intent(query, bool(pending_candidates))
 
     if intent["intent"] == "search":

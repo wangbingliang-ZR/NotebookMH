@@ -148,6 +148,7 @@ async def ingest_text(vault_uuid: str, title: str, text: str,
 async def ingest_url(vault_uuid: str, url: str) -> dict:
     parsed = parse_url(url)
     if not parsed["text"].strip():
-        return {"status": "error", "doc_hash": "", "chunks": 0, "msg": "URL 无可提取文本"}
+        msg = parsed.get("error") or "URL 无可提取文本"
+        return {"status": "error", "doc_hash": "", "chunks": 0, "msg": msg}
     return await ingest_text(vault_uuid, url, parsed["text"],
                              source_type="url", source_url=url)

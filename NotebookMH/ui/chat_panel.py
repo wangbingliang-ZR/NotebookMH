@@ -78,7 +78,7 @@ def render() -> None:
         sources = st.session_state.get("selected_sources") or None
         text_buf = ""
         citations: list[dict] = []
-        spinner = st.spinner("AI 正在思考...")
+        placeholder.markdown("_AI 正在思考..._")
 
         async def _run():
             nonlocal text_buf, citations
@@ -87,7 +87,6 @@ def render() -> None:
                 if ev["type"] == "citations":
                     citations = ev["data"]
                 elif ev["type"] == "delta":
-                    spinner.stop()
                     text_buf += ev["text"]
                     placeholder.markdown(text_buf + "▌")
                 elif ev["type"] == "done":
@@ -103,7 +102,7 @@ def render() -> None:
                         with st.expander("查看原文"):
                             st.text(full)
         except Exception:
-            spinner.stop()
+            placeholder.empty()
             st.error("对话失败，错误详情如下（请截图反馈）：")
             st.code(traceback.format_exc())
             return

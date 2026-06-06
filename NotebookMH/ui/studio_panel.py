@@ -81,18 +81,50 @@ def _render_result(key: str, label: str, res, vault_uuid: str, user_id: str):
         return
 
     if key == "mindmap":
-        st.markdown("**Mermaid 源码:**")
-        st.code(res, language="mermaid")
-        # 简单 HTML 渲染
         import html
         safe = html.escape(res)
+        st.markdown("**Mermaid 源码:**")
+        with st.expander("查看源码"):
+            st.code(res, language="mermaid")
         st.components.v1.html(
             f"""
-            <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-            <div class="mermaid">{safe}</div>
-            <script>mermaid.initialize({{startOnLoad: true}});</script>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ margin: 0; background: #f8fafc; }}
+  #mindmap-wrap {{ width: 100%; height: 100%; overflow: hidden; position: relative; }}
+  #mindmap-svg {{ width: 100%; height: 100%; }}
+</style>
+</head>
+<body>
+<div id="mindmap-wrap">
+  <div class="mermaid">{safe}</div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({{
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {{
+      primaryColor: '#dbeafe',
+      primaryTextColor: '#1e3a5f',
+      primaryBorderColor: '#3b82f6',
+      lineColor: '#64748b',
+      secondaryColor: '#f1f5f9',
+      tertiaryColor: '#ffffff',
+      fontFamily: '"Inter", "Noto Sans SC", "PingFang SC", sans-serif',
+      fontSize: '14px'
+    }},
+    flowchart: {{ useMaxWidth: true, htmlLabels: true, curve: 'basis' }},
+    mindmap: {{ useMaxWidth: true }}
+  }});
+</script>
+</body>
+</html>
             """,
-            height=400, scrolling=True,
+            height=600, scrolling=True,
         )
         cols = st.columns(2)
         if cols[0].button("保存为笔记", key=f"save_{key}"):

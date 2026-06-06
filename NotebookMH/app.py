@@ -7,7 +7,10 @@ import streamlit as st
 import config
 from ui import sidebar, chat_panel, studio_panel
 
-nest_asyncio.apply()
+try:
+    nest_asyncio.apply()
+except (ValueError, RuntimeError):
+    pass
 
 st.set_page_config(
     page_title="NotebookMH", page_icon="📓",

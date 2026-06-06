@@ -159,7 +159,47 @@ def render_upload_section() -> None:
             else:
                 st.warning("请输入 URL")
 
-    with st.expander("🔍 AI 联网找资料"):
+    with st.expander("� 批量导入网页链接"):
+        st.caption("每行一个 URL，系统会逐个抓取并加为来源")
+        bulk_urls = st.text_area(
+            "URL 列表", key="ui_bulk_urls",
+            height=120,
+            placeholder="https://www.zhongkao.com/...\nhttps://www.xbjy.com/...",
+        )
+        if st.button("批量导入", key="ui_btn_bulk_import", use_container_width=True):
+            lines = [u.strip() for u in bulk_urls.splitlines() if u.strip().startswith("http")]
+            if not lines:
+                st.warning("没有检测到有效的 http/https 链接")
+            else:
+                progress = st.progress(0, text=f"0 / {len(lines)}")
+                ok_count = 0
+                fail_count = 0
+                fail_list: list[str] = []
+                for i, u in enumerate(lines):
+                    try:
+                        res = asyncio.run(ingest_url(vault_uuid, u))
+                        if res.get("status") == "ok":
+                            ok_count += 1
+                        else:
+                            fail_count += 1
+                            fail_list.append(u[:60])
+                    except Exception:
+                        fail_count += 1
+                        fail_list.append(u[:60])
+                    progress.progress(
+                        (i + 1) / len(lines),
+                        text=f"{i + 1} / {len(lines)}  成功 {ok_count}  失败 {fail_count}",
+                    )
+                progress.empty()
+                st.success(f"完成：成功 {ok_count} 个，失败 {fail_count} 个")
+                if fail_list:
+                    with st.expander("失败的链接"):
+                        for u in fail_list:
+                            st.markdown(f"- `{u}`")
+                if ok_count:
+                    st.rerun()
+
+    with st.expander("�🔍 AI 联网找资料"):
         st.caption("输入主题 → AI 搜索候选 → 你勾选 → 一键导入")
         topic = st.text_input("研究主题 / 需求", key="ui_research_topic",
                               placeholder="如：2024年河北省初中生物学业水平考试")

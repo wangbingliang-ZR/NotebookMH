@@ -160,30 +160,83 @@ def render_upload_section() -> None:
                 st.warning("请输入 URL")
 
     with st.expander("🔍 AI 联网找资料"):
-        st.caption("输入主题，AI 自动联网搜索并把网页加为来源")
+        st.caption("输入主题 → AI 搜索候选 → 你勾选 → 一键导入")
         topic = st.text_input("研究主题 / 需求", key="ui_research_topic",
-                              placeholder="如：量子计算最新进展")
-        if st.button("AI 搜索并添加", key="ui_btn_research",
+                              placeholder="如：2024年河北省初中生物学业水平考试")
+
+        # ── Phase 1: 搜索 ──
+        if st.button("🔍 搜索候选来源", key="ui_btn_research_search",
                      use_container_width=True):
             if topic.strip():
-                from core.research import research_and_ingest
-                box = st.empty()
-                try:
-                    added = asyncio.run(research_and_ingest(
-                        vault_uuid, topic.strip(),
-                        progress=lambda m: box.info(m),
-                    ))
-                    if added:
-                        box.empty()
-                        st.success(f"已添加 {len(added)} 个来源")
+                from core.research import search_candidates
+                with st.spinner("正在搜索并抓取网页，请稍候..."):
+                    try:
+                        candidates = asyncio.run(search_candidates(topic.strip()))
+                        st.session_state["ui_research_results"] = candidates
+                        st.session_state["ui_research_topic_value"] = topic.strip()
                         st.rerun()
-                    else:
-                        box.empty()
-                        st.warning("未找到可用来源，换个说法再试")
-                except Exception:
-                    st.error("联网检索失败，请稍后重试")
+                    except Exception:
+                        st.error("搜索失败，请稍后重试")
             else:
                 st.warning("请输入研究主题")
+
+        # ── Phase 2: 展示候选，用户勾选 ──
+        candidates = st.session_state.get("ui_research_results", [])
+        if candidates:
+            st.divider()
+            st.markdown(
+                f"**找到 {len(candidates)} 个候选来源** "
+                f"（主题：{st.session_state.get('ui_research_topic_value', '')}）"
+            )
+            st.caption("勾选想导入的来源，点击下方「导入选中来源」")
+
+            selected_indices: list[int] = []
+            for i, c in enumerate(candidates):
+                with st.container(border=True):
+                    cols = st.columns([1, 12])
+                    with cols[0]:
+                        checked = st.checkbox(
+                            "", key=f"ui_research_chk_{i}", value=True,
+                            label_visibility="collapsed",
+                        )
+                    with cols[1]:
+                        st.markdown(f"**{c['title']}**")
+                        st.caption(
+                            f"🔗 [{c['url'][:50]}...]({c['url']})"
+                        )
+                        st.markdown(f"_{c['preview']}..._")
+                    if checked:
+                        selected_indices.append(i)
+
+            c0, c1 = st.columns(2)
+            if c0.button(
+                "✅ 导入选中来源", key="ui_btn_research_import",
+                use_container_width=True, type="primary",
+            ):
+                selected = [candidates[i] for i in selected_indices]
+                if not selected:
+                    st.warning("请至少勾选一项")
+                else:
+                    from core.research import ingest_selected
+                    with st.spinner("正在导入..."):
+                        try:
+                            added = asyncio.run(ingest_selected(vault_uuid, selected))
+                            st.success(f"已导入 {len(added)} 个来源")
+                            st.session_state.pop("ui_research_results", None)
+                            st.session_state.pop("ui_research_topic_value", None)
+                            st.rerun()
+                        except Exception:
+                            st.error("导入失败，请重试")
+
+            if c1.button("❌ 清空结果", key="ui_btn_research_clear",
+                         use_container_width=True):
+                st.session_state.pop("ui_research_results", None)
+                st.session_state.pop("ui_research_topic_value", None)
+                st.rerun()
+
+        elif "ui_research_results" in st.session_state and not candidates:
+            st.info("未找到符合条件的候选来源，换个更具体的说法再试")
+            st.session_state.pop("ui_research_results", None)
 
     if docs:
         st.caption(f"已收录 {len(docs)} 个来源")

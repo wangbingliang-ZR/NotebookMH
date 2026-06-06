@@ -103,7 +103,9 @@ def render() -> None:
                         with st.expander("查看原文"):
                             st.text(full)
         except Exception:
-            st.error("对话失败:")
+            spinner.stop()
+            st.error("对话失败，错误详情如下（请截图反馈）：")
             st.code(traceback.format_exc())
+            return
 
     st.rerun()

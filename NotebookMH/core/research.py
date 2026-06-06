@@ -178,25 +178,40 @@ async def plan_and_discover(topic: str, max_total: int = 30) -> list[dict]:
     log.info("规划出 %d 个知识模块: %s", len(modules),
              [m["category"] for m in modules])
 
-    # ── 步骤 1+2：分模块搜索，全局去重 ──
+    # ── 步骤 1：把所有查询词并行搜索（to_thread 避免阻塞事件循环）──
+    # 收集 (module_idx, query)
+    query_jobs = []
+    for mi, m in enumerate(modules):
+        for q in m["queries"]:
+            query_jobs.append((mi, q))
+
+    async def _do_search(q: str) -> list[dict]:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(search, q, 8), timeout=20,
+            )
+        except Exception:
+            return []
+
+    search_results = await asyncio.gather(
+        *[_do_search(q) for _, q in query_jobs]
+    )
+
+    # ── 步骤 2：把结果归到各模块，全局去重、过滤微信 ──
     seen_urls: set[str] = set()
     for m in modules:
-        m_hits: list[dict] = []
-        for q in m["queries"]:
-            try:
-                hits = search(q, max_results=8)
-            except Exception:
+        m["hits"] = []
+    for (mi, _q), hits in zip(query_jobs, search_results):
+        for h in hits:
+            u = h.get("url", "")
+            if not u or u in seen_urls:
                 continue
-            for h in hits:
-                u = h.get("url", "")
-                if not u or u in seen_urls:
-                    continue
-                if "mp.weixin.qq.com" in u:
-                    continue
-                seen_urls.add(u)
-                m_hits.append(h)
-        m["hits"] = m_hits
-        log.info("模块[%s] 搜到 %d 条", m["category"], len(m_hits))
+            if "mp.weixin.qq.com" in u:
+                continue
+            seen_urls.add(u)
+            modules[mi]["hits"].append(h)
+    for m in modules:
+        log.info("模块[%s] 搜到 %d 条", m["category"], len(m["hits"]))
 
     # ── 步骤 3：每模块 LLM 语义筛选 ──
     select_tasks = [

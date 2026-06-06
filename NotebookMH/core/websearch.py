@@ -16,7 +16,7 @@ def _search_bing(query: str, max_results: int) -> list[dict]:
 
     url = _BING.format(q=quote(query))
     try:
-        with httpx.Client(timeout=20, follow_redirects=True,
+        with httpx.Client(timeout=8, follow_redirects=True,
                           headers=_URL_HEADERS) as client:
             r = client.get(url)
             r.raise_for_status()
@@ -51,7 +51,7 @@ def _search_ddg(query: str, max_results: int) -> list[dict]:
 
     url = _DDG.format(q=quote(query))
     try:
-        with httpx.Client(timeout=20, follow_redirects=True,
+        with httpx.Client(timeout=8, follow_redirects=True,
                           headers=_URL_HEADERS) as client:
             r = client.get(url)
             r.raise_for_status()
@@ -88,7 +88,7 @@ def _search_sogou(query: str, max_results: int) -> list[dict]:
 
     url = _SOUGOU.format(q=quote(query))
     try:
-        with httpx.Client(timeout=20, follow_redirects=True,
+        with httpx.Client(timeout=8, follow_redirects=True,
                           headers=_URL_HEADERS) as client:
             r = client.get(url)
             r.raise_for_status()

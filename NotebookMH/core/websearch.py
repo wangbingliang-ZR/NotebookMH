@@ -19,7 +19,7 @@ def _search_tavily(query: str, max_results: int) -> list[dict]:
         "max_results": max_results,
         "search_depth": "advanced",
         "include_answer": False,
-        "include_raw_content": False,
+        "include_raw_content": True,
     }
     try:
         with httpx.Client(timeout=15) as client:
@@ -39,6 +39,7 @@ def _search_tavily(query: str, max_results: int) -> list[dict]:
             "title": item.get("title", "") or url,
             "url": url,
             "snippet": item.get("content", "")[:300],
+            "raw_content": item.get("raw_content") or "",
         })
     log.info("Tavily [%s] 返回 %d 条", query, len(out))
     return out

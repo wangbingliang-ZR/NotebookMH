@@ -138,19 +138,37 @@ async def _plan_research(topic: str) -> list[dict]:
 
 
 async def _fetch_candidate(hit: dict, reason: str, category: str) -> Optional[dict]:
-    """抓取单个网页全文并做质量检查，返回候选或 None。"""
+    """获取单个网页全文并做质量检查，返回候选或 None。
+
+    优先使用 Tavily 直接返回的 raw_content（无需再抓取，避免反爬/JS 问题）；
+    若没有 raw_content，再回退到本地 parse_url 抓取。
+    """
     import asyncio
     u = hit["url"]
     title = hit.get("title") or u
-    try:
-        parsed = await asyncio.wait_for(
-            asyncio.to_thread(parse_url, u), timeout=12,
-        )
-    except Exception:
-        return None
-    text = (parsed.get("text") or "").strip()
+
+    # ── 优先用 Tavily 已带回的正文 ──
+    text = (hit.get("raw_content") or "").strip()
+
+    # ── 没有 raw_content 才本地抓取 ──
+    if len(text) < _MIN_SOURCE_TEXT:
+        try:
+            parsed = await asyncio.wait_for(
+                asyncio.to_thread(parse_url, u), timeout=12,
+            )
+            fetched = (parsed.get("text") or "").strip()
+            if len(fetched) > len(text):
+                text = fetched
+        except Exception:
+            pass
+
     if not _content_quality(text):
-        return None
+        # 兜底：即便质量检查不过，只要有 snippet 也保留摘要级内容
+        snippet = (hit.get("snippet") or "").strip()
+        if len(snippet) >= 40:
+            text = snippet
+        else:
+            return None
     return {
         "title": title,
         "url": u,

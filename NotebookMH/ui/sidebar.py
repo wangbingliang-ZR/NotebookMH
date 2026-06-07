@@ -282,6 +282,50 @@ def render_upload_section() -> None:
 
     if docs:
         st.caption(f"已收录 {len(docs)} 个来源")
+
+        # ── 批量删除管理 ──
+        with st.expander("🗑️ 管理 / 删除来源"):
+            st.caption("勾选要删除的来源，或一键清空全部")
+            del_marks: list[str] = []
+            for d in docs[:50]:
+                if st.checkbox(f"{d.file_name[:34]}",
+                               key=f"delchk_{d.content_hash[:10]}"):
+                    del_marks.append(d.content_hash)
+
+            cda, cdb = st.columns(2)
+            if cda.button(f"删除勾选 ({len(del_marks)})",
+                          key="btn_del_checked",
+                          use_container_width=True,
+                          disabled=not del_marks):
+                from core.vector_store import vector_store
+                for h in del_marks:
+                    db_manager.delete_document(vault_uuid, h)
+                    vector_store.delete(vault_uuid, h)
+                st.success(f"已删除 {len(del_marks)} 个来源")
+                st.rerun()
+
+            if cdb.button("⚠️ 清空全部", key="btn_del_all",
+                          use_container_width=True):
+                st.session_state["_confirm_clear_all"] = True
+
+            if st.session_state.get("_confirm_clear_all"):
+                st.warning(f"确认删除全部 {len(docs)} 个来源？不可恢复！")
+                cca, ccb = st.columns(2)
+                if cca.button("确认清空", key="btn_confirm_clear",
+                              type="primary", use_container_width=True):
+                    from core.vector_store import vector_store
+                    for d in docs:
+                        db_manager.delete_document(vault_uuid, d.content_hash)
+                        vector_store.delete(vault_uuid, d.content_hash)
+                    st.session_state.pop("_confirm_clear_all", None)
+                    st.success("已清空全部来源")
+                    st.rerun()
+                if ccb.button("取消", key="btn_cancel_clear",
+                              use_container_width=True):
+                    st.session_state.pop("_confirm_clear_all", None)
+                    st.rerun()
+
+        # ── 来源列表（查看 + 单个删除）──
         selected: list[str] = []
         for d in docs[:50]:
             c0, c1, c2 = st.columns([1, 7, 1])
@@ -294,7 +338,7 @@ def render_upload_section() -> None:
                          key=f"view_{d.content_hash[:10]}",
                          use_container_width=True):
                 _show_source_dialog(vault_uuid, d.content_hash)
-            if c2.button("✕", key=f"del_{d.content_hash[:10]}", help="删除"):
+            if c2.button("✕", key=f"del_{d.content_hash[:10]}", help="删除此来源"):
                 from core.vector_store import vector_store
                 db_manager.delete_document(vault_uuid, d.content_hash)
                 vector_store.delete(vault_uuid, d.content_hash)

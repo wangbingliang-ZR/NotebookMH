@@ -95,6 +95,8 @@ def render() -> None:
                     placeholder.markdown(text_buf + "▌")
                 elif ev["type"] == "search_results":
                     new_candidates = ev["data"]
+                elif ev["type"] == "quiz_data":
+                    st.session_state["_chat_quiz_data"] = ev["data"]
                 elif ev["type"] == "sources_added":
                     sources_changed = True
                 elif ev["type"] == "done":
@@ -121,5 +123,21 @@ def render() -> None:
     # 导入完成后清空候选
     if sources_changed:
         st.session_state.pop("chat_candidates", None)
+
+    # 测验生成后显示跳转按钮
+    if st.session_state.get("_chat_quiz_data"):
+        quiz_items = st.session_state["_chat_quiz_data"]
+        st.divider()
+        st.success(f"📝 测验已生成：共 {len(quiz_items)} 题")
+        c0, c1 = st.columns(2)
+        if c0.button("📋 在对话中逐题作答", key="btn_chat_quiz", use_container_width=True):
+            st.session_state["_studio_result_quiz"] = quiz_items
+            st.session_state.pop("_chat_quiz_data", None)
+            st.rerun()
+        if c1.button("📄 查看完整试卷", key="btn_chat_fullpaper", use_container_width=True):
+            st.session_state["_studio_result_quiz"] = quiz_items
+            st.session_state["_qz_view_mode"] = "full_paper"
+            st.session_state.pop("_chat_quiz_data", None)
+            st.rerun()
 
     st.rerun()

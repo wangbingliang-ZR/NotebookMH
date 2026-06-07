@@ -92,6 +92,8 @@ async def _classify_intent(query: str, has_candidates: bool) -> dict:
     options = (
         '- "search"：用户想联网搜索资料、找来源、找资源（如"帮我搜河北中考生物真题"、'
         '"找一些光合作用的资料加进来"、"上网查一下…"）\n'
+        '- "quiz"：用户想基于已导入资料生成测验/模拟卷/考试题（如"帮我出一套测验"、'
+        '"生成模拟卷"、"在测验里生成"、"出几道真题难度的题"）\n'
         '- "normal"：普通问答，基于已有资料回答\n'
     )
     if has_candidates:
@@ -266,6 +268,27 @@ async def answer(query: str, vault_uuid: str, user_id: str,
                 yield ev
         db_manager.save_chat_pair(vault_uuid, user_id, query, full, [])
         yield {"type": "done", "full_text": full}
+        return
+
+    if intent["intent"] == "quiz":
+        from core.studio import generate_quiz
+        yield {"type": "delta",
+               "text": "📝 正在基于你导入的资料生成一套完整模拟卷，请稍候…\n\n"}
+        try:
+            items = await generate_quiz(vault_uuid, count=20)
+        except Exception:
+            log.warning("测验生成失败", exc_info=True)
+            items = []
+        if items:
+            yield {"type": "delta",
+                   "text": f"✅ 已生成 **{len(items)}** 题的完整模拟卷（含选择/填空/读图/综合）。\n\n"}
+            yield {"type": "quiz_data", "data": items}
+        else:
+            yield {"type": "delta",
+                   "text": "生成测验失败，请确保已导入相关资料（至少要有一些文档来源）。"}
+        full_text = f"📝 生成测验\n\n共 {len(items)} 题完整模拟卷。"
+        db_manager.save_chat_pair(vault_uuid, user_id, query, full_text, [])
+        yield {"type": "done", "full_text": full_text}
         return
 
     if intent["intent"] == "import":

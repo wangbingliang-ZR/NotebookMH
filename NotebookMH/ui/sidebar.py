@@ -361,6 +361,34 @@ def render() -> None:
     with st.sidebar:
         render_user_section()
         st.divider()
+
+        # ── 全局清空来源（最醒目，不受滚动影响）──
+        vault_uuid = st.session_state.get("vault_uuid", "")
+        if vault_uuid:
+            docs = db_manager.list_documents(vault_uuid)
+            if docs:
+                if st.button("🗑️ 清空全部来源", key="global_clear_sources",
+                             type="primary", use_container_width=True):
+                    st.session_state["_global_confirm_clear"] = True
+
+                if st.session_state.get("_global_confirm_clear"):
+                    st.warning(f"确认删除全部 {len(docs)} 个来源？不可恢复！")
+                    c0, c1 = st.columns(2)
+                    if c0.button("确认清空", key="global_confirm_yes",
+                                 type="primary", use_container_width=True):
+                        from core.vector_store import vector_store
+                        for d in docs:
+                            db_manager.delete_document(vault_uuid, d.content_hash)
+                            vector_store.delete(vault_uuid, d.content_hash)
+                        st.session_state.pop("_global_confirm_clear", None)
+                        st.success("已清空全部来源")
+                        st.rerun()
+                    if c1.button("取消", key="global_confirm_no",
+                                 use_container_width=True):
+                        st.session_state.pop("_global_confirm_clear", None)
+                        st.rerun()
+                st.divider()
+
         render_vault_section()
         st.divider()
         render_upload_section()

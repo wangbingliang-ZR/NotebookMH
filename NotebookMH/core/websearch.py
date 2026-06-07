@@ -1,8 +1,47 @@
-"""core/websearch.py — 联网搜索（多引擎聚合，国内服务器可用）"""
+"""core/websearch.py — 联网搜索（优先 Tavily API，回退多引擎爬虫）"""
 import logging
 from urllib.parse import quote
 
+from config import TAVILY_API_KEY, USE_TAVILY
+
 log = logging.getLogger(__name__)
+
+_TAVILY_URL = "https://api.tavily.com/search"
+
+
+def _search_tavily(query: str, max_results: int) -> list[dict]:
+    """Tavily 专业搜索 API：返回干净、相关的结构化结果。"""
+    import httpx
+
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "max_results": max_results,
+        "search_depth": "advanced",
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    try:
+        with httpx.Client(timeout=15) as client:
+            r = client.post(_TAVILY_URL, json=payload)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        log.warning("Tavily 搜索失败 [%s]: %s", query, e)
+        return []
+
+    out: list[dict] = []
+    for item in data.get("results", []):
+        url = item.get("url", "")
+        if not url.startswith("http"):
+            continue
+        out.append({
+            "title": item.get("title", "") or url,
+            "url": url,
+            "snippet": item.get("content", "")[:300],
+        })
+    log.info("Tavily [%s] 返回 %d 条", query, len(out))
+    return out
 
 _BING = "https://cn.bing.com/search?q={q}&setlang=zh-CN&ensearch=0"
 _DDG = "https://lite.duckduckgo.com/lite/?q={q}"
@@ -124,7 +163,14 @@ def _search_sogou(query: str, max_results: int) -> list[dict]:
 
 
 def search(query: str, max_results: int = 5) -> list[dict]:
-    """多引擎聚合搜索，返回 [{title, url, snippet}]。"""
+    """搜索：优先 Tavily API（高质量），失败回退多引擎爬虫。"""
+    # ── 优先 Tavily ──
+    if USE_TAVILY:
+        results = _search_tavily(query, max_results)
+        if results:
+            return results
+        log.info("Tavily 无结果，回退爬虫引擎 [%s]", query)
+
     all_results: list[dict] = []
     seen_urls: set[str] = set()
 

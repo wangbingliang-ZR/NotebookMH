@@ -27,6 +27,10 @@ AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.deepseek.com/v1")
 AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat")
 USE_MOCK_LLM = not DEEPSEEK_API_KEY
 
+# ── 联网搜索 ─────────────────────────────────────────
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+USE_TAVILY = bool(TAVILY_API_KEY)
+
 # ── Embedding ───────────────────────────────────────
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"  # 384 维，支持中文
 USE_SEMANTIC_EMBEDDING = False  # 禁用语义模型，直接用 HashingVectorizer（避免加载失败日志噪音）

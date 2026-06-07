@@ -10,9 +10,23 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-from core.websearch import _search_bing, _search_ddg, _search_sogou, search
+from core.websearch import _search_bing, _search_ddg, _search_sogou, _search_tavily, search
+from config import USE_TAVILY
 
 TOPIC = sys.argv[1] if len(sys.argv) > 1 else "河北中考生物真题"
+
+
+def stage0_tavily():
+    print("\n" + "=" * 60)
+    print(f"阶段0：Tavily API  (USE_TAVILY={USE_TAVILY})")
+    print("=" * 60)
+    if not USE_TAVILY:
+        print("未配置 TAVILY_API_KEY，跳过。请在 .env 添加后重试。")
+        return
+    res = _search_tavily(TOPIC, 8)
+    print(f"Tavily 返回 {len(res)} 条")
+    for r in res[:5]:
+        print(f"   - {r['title'][:45]}  |  {r['url'][:60]}")
 
 
 def stage1_engines():
@@ -82,6 +96,7 @@ async def stage3_pipeline():
 
 
 if __name__ == "__main__":
+    stage0_tavily()
     stage1_engines()
     stage1b_raw_html()
     agg = stage2_aggregate()

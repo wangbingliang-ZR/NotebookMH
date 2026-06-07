@@ -283,47 +283,56 @@ def render_upload_section() -> None:
     if docs:
         st.caption(f"已收录 {len(docs)} 个来源")
 
-        # ── 批量删除管理 ──
-        with st.expander("🗑️ 管理 / 删除来源"):
-            st.caption("勾选要删除的来源，或一键清空全部")
-            del_marks: list[str] = []
-            for d in docs[:50]:
-                if st.checkbox(f"{d.file_name[:34]}",
-                               key=f"delchk_{d.content_hash[:10]}"):
-                    del_marks.append(d.content_hash)
+        # ── 顶部批量操作（最醒目）──
+        if len(docs) >= 50:
+            st.error("� 已达 50 个来源上限，必须删除部分才能导入新资料")
+        c0, c1 = st.columns(2)
+        if c0.button("🗑️ 清空全部来源", key="btn_del_all_top",
+                     type="primary", use_container_width=True):
+            st.session_state["_confirm_clear_all"] = True
 
-            cda, cdb = st.columns(2)
-            if cda.button(f"删除勾选 ({len(del_marks)})",
-                          key="btn_del_checked",
-                          use_container_width=True,
-                          disabled=not del_marks):
+        if c1.button("📋 展开批量选择", key="btn_toggle_batch",
+                     use_container_width=True):
+            st.session_state["_show_batch_del"] = not st.session_state.get("_show_batch_del", False)
+            st.rerun()
+
+        # 确认清空弹窗
+        if st.session_state.get("_confirm_clear_all"):
+            st.warning(f"确认删除全部 {len(docs)} 个来源？不可恢复！")
+            cca, ccb = st.columns(2)
+            if cca.button("确认清空", key="btn_confirm_clear",
+                          type="primary", use_container_width=True):
                 from core.vector_store import vector_store
-                for h in del_marks:
-                    db_manager.delete_document(vault_uuid, h)
-                    vector_store.delete(vault_uuid, h)
-                st.success(f"已删除 {len(del_marks)} 个来源")
+                for d in docs:
+                    db_manager.delete_document(vault_uuid, d.content_hash)
+                    vector_store.delete(vault_uuid, d.content_hash)
+                st.session_state.pop("_confirm_clear_all", None)
+                st.success("已清空全部来源")
+                st.rerun()
+            if ccb.button("取消", key="btn_cancel_clear",
+                          use_container_width=True):
+                st.session_state.pop("_confirm_clear_all", None)
                 st.rerun()
 
-            if cdb.button("⚠️ 清空全部", key="btn_del_all",
-                          use_container_width=True):
-                st.session_state["_confirm_clear_all"] = True
-
-            if st.session_state.get("_confirm_clear_all"):
-                st.warning(f"确认删除全部 {len(docs)} 个来源？不可恢复！")
-                cca, ccb = st.columns(2)
-                if cca.button("确认清空", key="btn_confirm_clear",
-                              type="primary", use_container_width=True):
+        # 批量选择模式
+        if st.session_state.get("_show_batch_del"):
+            with st.container(border=True):
+                st.markdown("**批量删除**（勾选后点下方删除按钮）")
+                del_marks: list[str] = []
+                for d in docs[:50]:
+                    if st.checkbox(f"{d.file_name[:34]}",
+                                   key=f"delchk_{d.content_hash[:10]}"):
+                        del_marks.append(d.content_hash)
+                if st.button(f"删除勾选的 {len(del_marks)} 个来源", key="btn_del_checked",
+                             use_container_width=True, disabled=not del_marks):
                     from core.vector_store import vector_store
-                    for d in docs:
-                        db_manager.delete_document(vault_uuid, d.content_hash)
-                        vector_store.delete(vault_uuid, d.content_hash)
-                    st.session_state.pop("_confirm_clear_all", None)
-                    st.success("已清空全部来源")
+                    for h in del_marks:
+                        db_manager.delete_document(vault_uuid, h)
+                        vector_store.delete(vault_uuid, h)
+                    st.success(f"已删除 {len(del_marks)} 个来源")
                     st.rerun()
-                if ccb.button("取消", key="btn_cancel_clear",
-                              use_container_width=True):
-                    st.session_state.pop("_confirm_clear_all", None)
-                    st.rerun()
+
+        st.divider()
 
         # ── 来源列表（查看 + 单个删除）──
         selected: list[str] = []

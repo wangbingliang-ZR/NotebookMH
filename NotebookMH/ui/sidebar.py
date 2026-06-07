@@ -208,10 +208,10 @@ def render_upload_section() -> None:
         if st.button("🔍 搜索候选来源", key="ui_btn_research_search",
                      use_container_width=True):
             if topic.strip():
-                from core.research import search_candidates
-                with st.spinner("正在搜索并抓取网页，请稍候..."):
+                from core.research import plan_and_discover
+                with st.spinner("正在为「{}」规划知识结构并联网搜集资料，这一步会分多个维度并行搜索，请稍候 20-40 秒...".format(topic.strip())):
                     try:
-                        candidates = asyncio.run(search_candidates(topic.strip()))
+                        candidates = asyncio.run(plan_and_discover(topic.strip(), max_total=20))
                         st.session_state["ui_research_results"] = candidates
                         st.session_state["ui_research_topic_value"] = topic.strip()
                         st.rerun()

@@ -244,16 +244,35 @@ def _render_flashcard_session(cards: list, vault_uuid: str) -> None:
 
 
 def _render_quiz_session(items: list, vault_uuid: str) -> None:
-    """测验逐题交互：答一题 → 即时反馈+解析 → 下一题 → 最终得分。"""
+    """测验交互：支持选择题/填空题/读图题/综合题，可逐题作答或查看完整试卷。"""
     st.session_state.setdefault("_qz_idx", 0)
     st.session_state.setdefault("_qz_answered", False)
     st.session_state.setdefault("_qz_score", 0)
+    st.session_state.setdefault("_qz_view_mode", "interactive")  # interactive | full_paper
     n = len(items)
-    idx = st.session_state["_qz_idx"]
 
+    # ── 模式切换 ──
+    mode = st.session_state["_qz_view_mode"]
+    c0, c1 = st.columns(2)
+    if c0.button("📋 逐题作答模式", key="qz_mode_interactive",
+                 use_container_width=True, type="primary" if mode == "interactive" else "secondary"):
+        st.session_state["_qz_view_mode"] = "interactive"
+        st.rerun()
+    if c1.button("📄 查看完整试卷", key="qz_mode_full",
+                 use_container_width=True, type="primary" if mode == "full_paper" else "secondary"):
+        st.session_state["_qz_view_mode"] = "full_paper"
+        st.rerun()
+
+    if mode == "full_paper":
+        _render_full_paper(items)
+        return
+
+    # ── 逐题作答模式 ──
+    idx = st.session_state["_qz_idx"]
     if idx >= n:
         score = st.session_state["_qz_score"]
-        st.success(f"测验完成！得分 {score} / {n}")
+        total_score = sum(it.get("score", 1) for it in items)
+        st.success(f"测验完成！得分 {score} / {total_score}")
         c0, c1 = st.columns(2)
         if c0.button("🔄 再来一轮", key="qz_restart", use_container_width=True):
             st.session_state["_qz_idx"] = 0
@@ -262,33 +281,54 @@ def _render_quiz_session(items: list, vault_uuid: str) -> None:
             st.rerun()
         if c1.button("清除", key="qz_clear", use_container_width=True):
             for k in ("_qz_idx", "_qz_answered", "_qz_score",
-                      "_qz_last_correct"):
+                      "_qz_last_correct", "_qz_view_mode"):
                 st.session_state.pop(k, None)
             st.session_state.pop("_studio_result_quiz", None)
             st.rerun()
         return
 
     it = items[idx]
-    st.progress(idx / n, text=f"第 {idx + 1} / {n} 题")
+    q_type = it.get("type", "选择")
+    q_score = it.get("score", 1)
+    st.progress(idx / n, text=f"第 {idx + 1} / {n} 题  |  {q_type}（{q_score}分）")
     with st.container(border=True):
-        st.markdown(f"#### {it['question']}")
+        st.markdown(f"**【{q_type}】** {it['question']}")
         answered = st.session_state["_qz_answered"]
-        sel = st.radio("选择答案", it["options"], key=f"qz_opt_{idx}",
-                       index=None, disabled=answered)
+        user_answer = None
+
+        if "选择" in q_type:
+            opts = it.get("options", [])
+            if opts:
+                user_answer = st.radio("选择答案", opts, key=f"qz_opt_{idx}",
+                                       index=None, disabled=answered)
+            else:
+                st.info("（本题无选项，请直接作答）")
+                user_answer = st.text_input("你的答案", key=f"qz_text_{idx}",
+                                           disabled=answered)
+        else:
+            user_answer = st.text_area("你的答案", key=f"qz_text_{idx}",
+                                       height=80, disabled=answered)
 
         if not answered:
             if st.button("提交", key=f"qz_submit_{idx}",
                          use_container_width=True):
-                if not sel:
-                    st.warning("请先选择一个答案")
+                if not user_answer or (isinstance(user_answer, str) and not user_answer.strip()):
+                    st.warning("请先作答")
                 else:
-                    sel_letter = sel.strip()[0].upper()
-                    correct = it["correct"].strip().upper()
-                    ok = sel_letter == correct
+                    correct = str(it["correct"]).strip()
+                    ans_str = user_answer.strip() if isinstance(user_answer, str) else str(user_answer).strip()
+                    # 宽松匹配：选择题取首字母，其他题去除空格后比对
+                    if "选择" in q_type and len(ans_str) == 1:
+                        ans_clean = ans_str.upper()
+                        corr_clean = correct.upper()
+                    else:
+                        ans_clean = ans_str.replace(" ", "").replace("，", ",").lower()
+                        corr_clean = correct.replace(" ", "").replace("，", ",").lower()
+                    ok = ans_clean == corr_clean
                     st.session_state["_qz_answered"] = True
                     st.session_state["_qz_last_correct"] = ok
                     if ok:
-                        st.session_state["_qz_score"] += 1
+                        st.session_state["_qz_score"] += q_score
                     st.rerun()
         else:
             if st.session_state.get("_qz_last_correct"):
@@ -296,12 +336,32 @@ def _render_quiz_session(items: list, vault_uuid: str) -> None:
             else:
                 st.error(f"❌ 答错了，正确答案：{it['correct']}")
             if it.get("explanation"):
-                st.caption(f"解析：{it['explanation']}")
+                st.info(f"**解析：** {it['explanation']}")
             if st.button("下一题 ▶", key=f"qz_next_{idx}",
                          use_container_width=True):
                 st.session_state["_qz_idx"] += 1
                 st.session_state["_qz_answered"] = False
                 st.rerun()
+
+
+def _render_full_paper(items: list) -> None:
+    """展示完整试卷（所有题目+答案+解析）。"""
+    st.markdown("### 📄 完整模拟试卷")
+    total = sum(it.get("score", 1) for it in items)
+    st.caption(f"共 {len(items)} 题，满分 {total} 分")
+
+    for i, it in enumerate(items, 1):
+        q_type = it.get("type", "选择")
+        score = it.get("score", 1)
+        with st.container(border=True):
+            st.markdown(f"**{i}. 【{q_type} · {score}分】** {it['question']}")
+            if "选择" in q_type and it.get("options"):
+                for opt in it["options"]:
+                    st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{opt}")
+            with st.expander("查看答案与解析"):
+                st.markdown(f"**答案：** {it['correct']}")
+                if it.get("explanation"):
+                    st.markdown(f"**解析：** {it['explanation']}")
 
 
 def _render_quiz_library(vault_uuid: str) -> None:

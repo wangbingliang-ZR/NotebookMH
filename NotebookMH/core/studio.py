@@ -142,24 +142,47 @@ async def generate_flashcards(vault_uuid: str, count: int = 10) -> list[dict]:
             and c.get("question") and c.get("answer")][:count]
 
 
-async def generate_quiz(vault_uuid: str, count: int = 5) -> list[dict]:
+async def generate_quiz(vault_uuid: str, count: int = 20) -> list[dict]:
+    """基于已收录资料生成一套完整的中考模拟卷（真题难度）。"""
     data = await _gen_json(
         vault_uuid,
-        system="你是测验题生成器，仅返回 JSON。",
+        system="你是资深中考地理命题专家，熟悉各地中考真题风格。仅返回 JSON。",
         task=(
-            f"基于资料生成 {count} 道单选题。每题 4 个选项，标注正确答案字母（A/B/C/D），"
-            "并给出简要解析。返回 JSON：{\"items\": ["
-            "{\"question\":\"...\", \"options\":[\"A. ...\",\"B. ...\",\"C. ...\",\"D. ...\"],"
-            "\"correct\":\"A\", \"explanation\":\"...\"}]}"
+            f"基于资料生成一套完整的「{count}题中考地理模拟卷」，必须严格匹配真题难度和题型分布：\n\n"
+            "题型与题量（参照真实中考）：\n"
+            "1. 单项选择题（约 40%）：每题 4 个选项，考查读图识图、基础概念、区域判断\n"
+            "2. 填空题（约 20%）：填地名、地形、气候类型、方向等关键词\n"
+            "3. 读图分析题（约 25%）：给地图/图表，设 2-3 小问，考查综合分析能力\n"
+            "4. 综合探究题（约 15%）：结合时事热点或生活情境，考查知识迁移\n\n"
+            "命题要求：\n"
+            "- 题目必须参考已收录资料中的真题风格和考点分布\n"
+            "- 涉及地图的题目要描述图中关键信息（经纬度、等高线、气候数据等）\n"
+            "- 每题标注【题型】和【分值】\n"
+            "- 给出标准答案和详细解析（说明考查知识点）\n\n"
+            "返回 JSON：{\"items\": ["
+            "{\"question\":\"题目描述...\", \"type\":\"选择/填空/读图/综合\", \"score\":2, "
+            "\"options\":[\"A...\",\"B...\",\"C...\",\"D...\"], "
+            "\"correct\":\"答案\", \"explanation\":\"解析...\"},\n"
+            "...]}\n"
+            "注意：填空题和读图题不需要 options 字段；综合题可设置 2-3 个小问。"
         ),
     )
     items = data.get("items") or []
     valid: list[dict] = []
     for it in items[:count]:
-        if (isinstance(it, dict) and it.get("question")
-                and isinstance(it.get("options"), list) and len(it["options"]) >= 2
-                and it.get("correct")):
-            valid.append(it)
+        if isinstance(it, dict) and it.get("question") and it.get("correct"):
+            # 统一字段格式
+            q_type = it.get("type", "选择")
+            if "选择" in q_type and not isinstance(it.get("options"), list):
+                continue  # 选择题必须有选项
+            valid.append({
+                "question": str(it["question"]),
+                "type": q_type,
+                "score": int(it.get("score", 2)),
+                "options": it.get("options", []),
+                "correct": str(it["correct"]),
+                "explanation": str(it.get("explanation", "")),
+            })
     return valid
 
 

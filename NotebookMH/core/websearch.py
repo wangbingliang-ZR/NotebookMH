@@ -44,6 +44,47 @@ def _search_tavily(query: str, max_results: int) -> list[dict]:
     log.info("Tavily [%s] 返回 %d 条", query, len(out))
     return out
 
+
+def search_images(query: str, max_results: int = 4) -> list[dict]:
+    """用 Tavily 搜索相关真实图片，返回 [{url, description}]。"""
+    if not USE_TAVILY:
+        return []
+    import httpx
+
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "max_results": max_results,
+        "include_images": True,
+        "include_image_descriptions": True,
+        "search_depth": "basic",
+    }
+    try:
+        with httpx.Client(timeout=15) as client:
+            r = client.post(_TAVILY_URL, json=payload)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        log.warning("Tavily 图片搜索失败 [%s]: %s", query, e)
+        return []
+
+    out: list[dict] = []
+    for img in data.get("images", []):
+        # Tavily 可能返回字符串 URL 或 {url, description} 字典
+        if isinstance(img, str):
+            url = img
+            desc = ""
+        elif isinstance(img, dict):
+            url = img.get("url", "")
+            desc = img.get("description", "")
+        else:
+            continue
+        if url.startswith("http"):
+            out.append({"url": url, "description": desc})
+    log.info("Tavily 图片 [%s] 返回 %d 张", query, len(out))
+    return out
+
+
 _BING = "https://cn.bing.com/search?q={q}&setlang=zh-CN&ensearch=0"
 _DDG = "https://lite.duckduckgo.com/lite/?q={q}"
 _SOUGOU = "https://www.sogou.com/web?query={q}"

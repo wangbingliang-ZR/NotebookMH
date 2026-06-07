@@ -293,6 +293,7 @@ def _render_quiz_session(items: list, vault_uuid: str) -> None:
     st.progress(idx / n, text=f"第 {idx + 1} / {n} 题  |  {q_type}（{q_score}分）")
     with st.container(border=True):
         st.markdown(f"**【{q_type}】** {it['question']}")
+        _render_visual(it.get("visual"), key=f"vis_q_{idx}")
         answered = st.session_state["_qz_answered"]
         user_answer = None
 
@@ -355,6 +356,7 @@ def _render_full_paper(items: list) -> None:
         score = it.get("score", 1)
         with st.container(border=True):
             st.markdown(f"**{i}. 【{q_type} · {score}分】** {it['question']}")
+            _render_visual(it.get("visual"), key=f"vis_p_{i}")
             if "选择" in q_type and it.get("options"):
                 for opt in it["options"]:
                     st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{opt}")
@@ -362,6 +364,23 @@ def _render_full_paper(items: list) -> None:
                 st.markdown(f"**答案：** {it['correct']}")
                 if it.get("explanation"):
                     st.markdown(f"**解析：** {it['explanation']}")
+
+
+def _render_visual(visual, key: str = "") -> None:
+    """渲染题目配图：SVG 直接嵌入，image 显示网络图片。"""
+    if not isinstance(visual, dict):
+        return
+    kind = visual.get("kind")
+    if kind == "svg" and visual.get("svg"):
+        st.components.v1.html(
+            f'<div style="background:#fff;padding:8px;border-radius:8px;">{visual["svg"]}</div>',
+            height=340, scrolling=True,
+        )
+    elif kind == "image" and visual.get("url"):
+        try:
+            st.image(visual["url"], use_container_width=True)
+        except Exception:
+            st.caption(f"配图加载失败：{visual['url']}")
 
 
 def _render_quiz_library(vault_uuid: str) -> None:

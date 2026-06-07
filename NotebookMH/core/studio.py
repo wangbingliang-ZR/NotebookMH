@@ -156,13 +156,20 @@ async def generate_quiz(vault_uuid: str, count: int = 20) -> list[dict]:
             "4. 综合探究题（约 15%）：结合时事热点或生活情境，考查知识迁移\n\n"
             "命题要求：\n"
             "- 题目必须参考已收录资料中的真题风格和考点分布\n"
-            "- **所有涉及地图/图表的题目，必须用纯文字描述图中关键信息**（如：经纬度范围、等高线数值、气候数据、河流走向等），**绝不要写'请看下图''依据图示'这类依赖图片的表述，因为系统无法显示图片**\n"
             "- 每题标注【题型】和【分值】\n"
-            "- 给出标准答案和详细解析（说明考查知识点）\n\n"
+            "- 给出标准答案和详细解析（说明考查知识点）\n"
+            "- **如果某题需要配图**（如地图、等高线、几何图、电路图、装置图、实物照片），"
+            "请在该题加 visual 字段说明：\n"
+            "  · 示意图（可用线条/符号绘制，如几何/电路/坐标/流程/等高线）→ "
+            "{\"kind\":\"svg\",\"query\":\"详细的绘图描述\"}\n"
+            "  · 需要真实照片（如设备实物、真实地形景观）→ "
+            "{\"kind\":\"image\",\"query\":\"图片搜索关键词\"}\n"
+            "  · 不需要图则省略 visual 字段\n\n"
             "返回 JSON：{\"items\": ["
             "{\"question\":\"题目描述...\", \"type\":\"选择/填空/读图/综合\", \"score\":2, "
             "\"options\":[\"A...\",\"B...\",\"C...\",\"D...\"], "
-            "\"correct\":\"答案\", \"explanation\":\"解析...\"},\n"
+            "\"correct\":\"答案\", \"explanation\":\"解析...\", "
+            "\"visual\":{\"kind\":\"svg\",\"query\":\"...\"}},\n"
             "...]}\n"
             "注意：填空题和读图题不需要 options 字段；综合题可设置 2-3 个小问。"
         ),
@@ -175,14 +182,34 @@ async def generate_quiz(vault_uuid: str, count: int = 20) -> list[dict]:
             q_type = it.get("type", "选择")
             if "选择" in q_type and not isinstance(it.get("options"), list):
                 continue  # 选择题必须有选项
-            valid.append({
+            entry = {
                 "question": str(it["question"]),
                 "type": q_type,
                 "score": int(it.get("score", 2)),
                 "options": it.get("options", []),
                 "correct": str(it["correct"]),
                 "explanation": str(it.get("explanation", "")),
-            })
+            }
+            v = it.get("visual")
+            if isinstance(v, dict) and v.get("kind") in ("svg", "image") and v.get("query"):
+                entry["visual_spec"] = {"kind": v["kind"], "query": str(v["query"])}
+            valid.append(entry)
+
+    # ── 并行生成所有配图 ──
+    import asyncio
+    from core.visuals import make_visual
+    visual_jobs = [(i, it["visual_spec"]) for i, it in enumerate(valid)
+                   if it.get("visual_spec")]
+    if visual_jobs:
+        results = await asyncio.gather(
+            *[make_visual(spec) for _, spec in visual_jobs],
+            return_exceptions=True,
+        )
+        for (i, _spec), res in zip(visual_jobs, results):
+            if isinstance(res, dict) and res.get("kind") != "none":
+                valid[i]["visual"] = res
+            valid[i].pop("visual_spec", None)
+
     return valid
 
 
